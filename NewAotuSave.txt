@@ -1,0 +1,417 @@
+#include<GL/glew.h>
+#include <GLFW/glfw3.h>
+#include <math.h>
+#include<iostream>
+//#include <stdio.h>
+#include<fstream>
+#include<string.h>
+#include<sstream>
+#include "Renender.h"
+#include "VertexBuffer.h"
+#include "IndexBuffer.h"
+#include "vendor/imgui.h"
+#include "vendor/imgui_impl_glfw.h"
+#include "GLMATH/glm.hpp"
+#include "vendor/imgui_impl_opengl3.h"
+#include "vendor/imconfig.h"
+// [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and compatibility with old VS compilers.
+// To link with VS2010-era libraries, VS2015+ requires linking with legacy_stdio_definitions.lib, which we do using this pragma.
+// Your own project should not be affected, as you are likely to link with a newer binary of GLFW that is adequate for your version of Visual Studio.
+#if defined(_MSC_VER) && (_MSC_VER >= 1900) && !defined(IMGUI_DISABLE_WIN32_FUNCTIONS)
+#pragma comment(lib, "legacy_stdio_definitions")
+#endif
+
+static void glfw_error_callback(int error, const char* description)
+{
+    fprintf(stderr, "Glfw Error %d: %s\n", error, description);
+}
+
+using namespace std;
+
+
+struct ShaderProgramSource
+{
+	string VertexSource;
+	string FragmentSource;
+};
+
+static ShaderProgramSource ParseShader(const string filePath) {
+
+	enum class ShaderType
+	{
+		NONE = -1, VERTEX = 0, FRAGMENT = 1
+	};
+
+	ifstream stream(filePath);
+	ShaderType type = ShaderType::NONE;
+	string line;
+	stringstream ss[2]; // One for vertex shader while the other is for the fragment shader
+	while (getline(stream, line))
+	{
+		if (line.find("#shader") != string::npos)
+		{
+			if (line.find("vertex") != string::npos)
+			{
+				//set vertex mode
+				type = ShaderType::VERTEX;
+			}
+			else {
+				//set fragment mode
+				type = ShaderType::FRAGMENT;
+			}
+		}
+		else
+		{
+			ss[(int)type] << line << '\n'; // Add line to the stream string
+		}
+	}
+	return { ss[0].str(), ss[1].str() };
+}
+
+static int CompilerShader(unsigned int type, const string& source) {
+	unsigned int id = glCreateShader(type);
+	const char* src = source.c_str();
+	glShaderSource(id, 1, &src, nullptr);
+	glCompileShader(id);
+
+	int result;
+	GLCall(glGetShaderiv(id, GL_COMPILE_STATUS, &result));
+	if (result == GL_FALSE)
+	{
+		int length;
+		GLCall(glGetShaderiv(id, GL_INFO_LOG_LENGTH, &length));
+		char* message = (char*)alloca(length * sizeof(char));
+		glGetShaderInfoLog(id, length, &length, message);
+		cout << "Failed to compile " << (type == GL_VERTEX_SHADER ? "vertex " : "fragment ") << "shader" << endl;
+		cout << message << endl;
+		glDeleteShader(id);
+		return 0;
+	}
+	return id;
+}
+
+static unsigned int CreateShader(const std::string& vertexShader, const std::string& fragmentShader) {
+	unsigned int programe = glCreateProgram();  // "unsigned int" equals to "GLuint"
+	unsigned int vShder = CompilerShader(GL_VERTEX_SHADER, vertexShader);
+	unsigned int fShder = CompilerShader(GL_FRAGMENT_SHADER, fragmentShader);
+
+	glAttachShader(programe, vShder);
+	glAttachShader(programe, fShder);
+	glLinkProgram(programe);
+	GLCall(glValidateProgram(programe));
+
+	glDeleteShader(vShder);
+	glDeleteShader(fShder);
+
+	return programe;
+}
+
+int main(void)
+{
+	GLFWwindow* window;
+
+	/* Initialize the library */
+	if (!glfwInit())
+		return -1;
+
+	// Decide GL+GLSL versions
+#if __APPLE__
+	// GL 3.2 + GLSL 150
+	const char* glsl_version = "#version 150";
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
+	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // Required on Mac
+#else
+	// GL 3.0 + GLSL 130
+	const char* glsl_version = "#version 130";
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);// Must bind object below because it's Core and no defaultly bound
+	//glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
+	//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // 3.0+ only
+#endif
+
+	/* Create a windowed mode window and its OpenGL context */
+	window = glfwCreateWindow(1280, 720, "Shaders in OpenGL", NULL, NULL);
+	if (!window)
+	{
+		glfwTerminate();
+		return -1;
+	}
+
+	/* Make the window's context current */
+	glfwMakeContextCurrent(window);
+
+	glfwSwapInterval(1); // Set the interval time among each rendering time
+
+
+	// Initialize OpenGL loader
+#if defined(IMGUI_IMPL_OPENGL_LOADER_GL3W)
+	bool err = gl3wInit() != 0;
+#elif defined(IMGUI_IMPL_OPENGL_LOADER_GLEW)
+	bool err = glewInit() != GLEW_OK;
+#elif defined(IMGUI_IMPL_OPENGL_LOADER_GLAD)
+	bool err = gladLoadGL() == 0;
+#else
+	bool err = false; // If you use IMGUI_IMPL_OPENGL_LOADER_CUSTOM, your loader is likely to requires some form of initialization.
+#endif
+	if (err)
+	{
+		fprintf(stderr, "Failed to initialize OpenGL loader!\n");
+		return 1;
+	}
+
+
+	if (glewInit() != GLEW_OK)
+	{
+		cout << "Error!!!" << endl;  // Will not an Error printing 
+	}
+	cout << "Your current GL version is : " << glGetString(GL_VERSION) << endl;
+
+
+	// Setup Dear ImGui context
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO(); (void)io;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+
+	// Setup Dear ImGui style
+	ImGui::StyleColorsDark();
+	//ImGui::StyleColorsClassic();
+
+	// Setup Platform/Renderer bindings
+	ImGui_ImplGlfw_InitForOpenGL(window, true);
+	ImGui_ImplOpenGL3_Init(glsl_version);
+
+	// Load Fonts
+	// - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
+	// - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
+	// - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
+	// - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
+	// - Read 'misc/fonts/README.txt' for more instructions and details.
+	// - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
+	io.Fonts->AddFontDefault();
+	//io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
+	//io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
+	//io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
+	//io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
+	//ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
+	//IM_ASSERT(font != NULL);
+
+	// Our state
+	bool show_demo_window = true;
+	bool show_another_window = false;
+	ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+
+
+
+
+	{ //Surround in case the valid context was terminated before the index buffer destructs itself
+		float position[] = {
+			-0.5f,-0.5f,//0
+			0.5f, -0.5f,//1
+			0.5f,  0.5f,//2
+		   -0.5f,  0.5f//3
+		};
+
+		unsigned int indecies[] = {
+			0,1,2,
+			0,2,3
+		};
+
+		////VAO must be bound in the "Core" profile
+		unsigned int vao; // vao ----> vertex array object: which will hold vertex array object ID
+		GLCall(glGenVertexArrays(1, &vao));
+		GLCall(glBindVertexArray(vao));
+
+		VertexBuffer vb(position, 4 * 2 * sizeof(float));
+
+		GLCall(glEnableVertexAttribArray(0)); //The index must be the same with the code below
+		GLCall(glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(float) * 2, 0));
+
+		IndexBuffer ib(indecies, 6);
+
+		ShaderProgramSource source = ParseShader("Basics.shader");
+
+		unsigned int shader = CreateShader(source.VertexSource, source.FragmentSource);
+		glUseProgram(shader);
+
+		int location = glGetUniformLocation(shader, "u_Color");
+		ASSERT(location != -1); // Assert the location in case it was ruined or fragiled£¡*********Very Important*********
+
+		GLCall(glBindVertexArray(0)); // Bind vertex array object below in the while-loop
+		GLCall(glUseProgram(0));
+		GLCall(glBindBuffer(GL_ARRAY_BUFFER, 0));
+		GLCall(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+
+
+		// Setup Dear ImGui context
+		ImGui::CreateContext();
+		// Setup Platform/Renderer bindings
+		ImGui_ImplGlfw_InitForOpenGL(window, true);
+		// Setup Dear ImGui style
+		ImGui::StyleColorsDark();
+
+
+
+
+		float red = 0.0f;
+		float increment = 0.05f;
+
+		/* Loop until the user closes the window */
+		while (!glfwWindowShouldClose(window))
+		{
+			/* Render here */
+			glClear(GL_COLOR_BUFFER_BIT);
+
+
+			// Start the Dear ImGui frame
+			ImGui_ImplOpenGL3_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+
+			// 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
+			if (show_demo_window)
+				ImGui::ShowDemoWindow(&show_demo_window);
+
+			// 2. Show a simple window that we create ourselves. We use a Begin/End pair to created a named window.
+			{
+				static float f = 0.0f;
+				static int counter = 0;
+
+				ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+
+				ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
+				ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
+				ImGui::Checkbox("Another Window", &show_another_window);
+
+				ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
+				ImGui::ColorEdit3("clear color", (float*)& clear_color); // Edit 3 floats representing a color
+
+				if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
+					counter++;
+				ImGui::SameLine();
+				ImGui::Text("counter = %d", counter);
+
+				ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+				ImGui::End();
+			}
+
+			// 3. Show another simple window.
+			if (show_another_window)
+			{
+				ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+				ImGui::Text("Hello from another window!");
+				if (ImGui::Button("Close Me"))
+					show_another_window = false;
+				ImGui::End();
+			}
+
+
+			// Rendering
+			ImGui::Render();
+			int display_w, display_h;
+			glfwGetFramebufferSize(window, &display_w, &display_h);
+			glViewport(0, 0, display_w, display_h);
+			glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
+			glClear(GL_COLOR_BUFFER_BIT);
+			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+			// Start the Dear ImGui frame
+			//ImGui_ImplGlfw_NewFrame();//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+			//ImGui_ImplOpenGL3_NewFrame();
+
+			GLCall(glUseProgram(shader)); // Reloading the shader to the GPU ----> (1) Bind shader
+			GLCall(glUniform4f(location, red, 0.9f, 0.0f, 1.0f)); // Only the Grayscale will change when RGB is equally distributed
+
+			GLCall(glBindVertexArray(vao)); //Rebinding vao
+			ib.Bind();
+
+			/*Draw here*/
+			//glDrawArrays(GL_TRIANGLES, 0, 6);
+			GLCall(glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr));
+
+			if (red > 1.0f)
+			{
+				increment = -0.05f; // Make the increment go back to initial state
+			}
+			else if (red < 0.0f)
+			{
+				increment = 0.05f; // Make the increment go back to initial state
+			}
+			red += increment; // Add the increment in each loop
+
+
+/*
+			static float f = 0.0f;
+			static int counter = 0;
+
+			ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+
+			ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
+			ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
+			ImGui::Checkbox("Another Window", &show_another_window);
+
+			ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
+			ImGui::ColorEdit3("clear color", (float*)& clear_color); // Edit 3 floats representing a color
+
+			if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
+				counter++;
+			ImGui::SameLine();
+			ImGui::Text("counter = %d", counter);
+
+			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+			ImGui::End();
+
+
+
+			// Rendering
+			ImGui::Render();
+			//ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());//Must include ----#include "imgui_impl_opengl3.h"
+			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+*/
+/* Swap front and back buffers */
+			glfwSwapBuffers(window);
+
+			/* Poll for and process events */
+			glfwPollEvents();
+		}
+		glDeleteProgram(shader);
+
+	}//Surround in case the valid context was terminated before the index buffer destructs itself
+
+
+
+
+
+	//// Cleanup ImGui
+	////ImGui_ImplOpenGL3_Shutdown();
+	//ImGui_ImplGlfw_Shutdown();
+	////ImGui_ImplOpenGL3_Shutdown();
+	//ImGui::DestroyContext();
+
+		// Cleanup
+	ImGui_ImplOpenGL3_Shutdown();
+	ImGui_ImplGlfw_Shutdown();
+	ImGui::DestroyContext();
+
+
+
+	glfwTerminate();// Destroy valid OpenGL context. !!!!!!!!!!Comedy!!!!!!!!!!!!
+	/*Since the glCheckError() is set formally to run in the while-loop, it will always run glCheckError()
+	in the IndexBuffer class and will never stop until force stopped ---->the console window did
+	not return 0, until I forced-cloaed programe it returned -1.[Amazing!]
+	But the 'glfwTerminate()' destroys the valid OpenGL context, meanwhile the while-loop has not stopped
+	yet, so the function 'glCheckError()' to check the error is still running.
+	'glCheckError' then stop at the while-loop line of 'glClearError()' function because
+	of the vanished OpenGL context, it tries to clear all the errors in the loop.
+	!!!But this behavior of 'glClearError()' has actually prevented(stopped) the destrustion
+	of index buffer from index buffer itself. Remember that the 'IndexBuffer id(indicies, 6)' is
+	a stack allocator object ----> the destructor method comes last(in the stack)
+	only at the end of main function(very last that runs only at the front of return 0)!
+	*/
+	return 0;
+}
+
